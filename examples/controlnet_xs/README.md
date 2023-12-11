@@ -1,6 +1,6 @@
 # ControlNet-XS training example
 
-**Copied from examples/controlnet/README.md and not yet adjusted to ControlNet-XS**
+**Copied from examples/controlnet/README.md and not yet fully adjusted to ControlNet-XS**
 
 [Adding Conditional Control to Text-to-Image Diffusion Models](https://arxiv.org/abs/2302.05543) by Lvmin Zhang and Maneesh Agrawala.
 
@@ -64,9 +64,10 @@ wget https://huggingface.co/datasets/huggingface/documentation-images/resolve/ma
 export MODEL_DIR="runwayml/stable-diffusion-v1-5"
 export OUTPUT_DIR="path to save model"
 
-accelerate launch train_controlnet.py \
+accelerate launch train_controlnetxs.py \
  --pretrained_model_name_or_path=$MODEL_DIR \
  --output_dir=$OUTPUT_DIR \
+ --init_original \
  --dataset_name=fusing/fill50k \
  --resolution=512 \
  --learning_rate=1e-5 \
@@ -86,9 +87,10 @@ Gradient accumulation with a smaller batch size can be used to reduce training r
 export MODEL_DIR="runwayml/stable-diffusion-v1-5"
 export OUTPUT_DIR="path to save model"
 
-accelerate launch train_controlnet.py \
+accelerate launch train_controlnetxs.py \
  --pretrained_model_name_or_path=$MODEL_DIR \
  --output_dir=$OUTPUT_DIR \
+ --init_original \
  --dataset_name=fusing/fill50k \
  --resolution=512 \
  --learning_rate=1e-5 \
