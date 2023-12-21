@@ -31,11 +31,7 @@ from .unet_2d_blocks import (
     CrossAttnDownBlock2D,
     CrossAttnUpBlock2D,
     DownBlock2D,
-    Downsample2D,
-    ResnetBlock2D,
-    Transformer2DModel,
     UpBlock2D,
-    Upsample2D,
 )
 from .unet_2d_condition import UNet2DConditionModel
 
@@ -593,6 +589,8 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
                 If `return_dict` is `True`, a [`~models.controlnetxs.ControlNetXSOutput`] is returned, otherwise a
                 tuple is returned where the first element is the sample tensor.
         """
+        ctrl_model = self.control_model
+
         # check channel order
         channel_order = self.config.controlnet_conditioning_channel_order
 
@@ -638,7 +636,7 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
         t_emb = t_emb.to(dtype=sample.dtype)
 
         if self.config.learn_embedding:
-            ctrl_temb = self.control_model.time_embedding(t_emb, timestep_cond)
+            ctrl_temb = ctrl_model.time_embedding(t_emb, timestep_cond)
             base_temb = base_model.time_embedding(t_emb, timestep_cond)
             interpolation_param = self.config.time_embedding_mix**0.3
 
@@ -701,16 +699,10 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
         )
         scales = iter(scale_list)
 
-        base_down_subblocks = to_sub_blocks(base_model.down_blocks)
-        ctrl_down_subblocks = to_sub_blocks(self.control_model.down_blocks)
-        base_mid_subblocks = to_sub_blocks([base_model.mid_block])
-        ctrl_mid_subblocks = to_sub_blocks([self.control_model.mid_block])
-        base_up_subblocks = to_sub_blocks(base_model.up_blocks)
-
         # Cross Control
         # 0 - conv in
         h_base = base_model.conv_in(h_base)
-        h_ctrl = self.control_model.conv_in(h_ctrl)
+        h_ctrl = ctrl_model.conv_in(h_ctrl)
         if guided_hint is not None:
             h_ctrl += guided_hint
         h_base = h_base + next(it_down_convs_out)(h_ctrl) * next(scales)  # D - add ctrl -> base
@@ -719,26 +711,87 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
         hs_ctrl.append(h_ctrl)
 
         # 1 - down
-        for m_base, m_ctrl in zip(base_down_subblocks, ctrl_down_subblocks):
-            h_ctrl = torch.cat([h_ctrl, next(it_down_convs_in)(h_base)], dim=1)  # A - concat base -> ctrl
-            h_base = m_base(h_base, temb, cemb, attention_mask, cross_attention_kwargs)  # B - apply base subblock
-            h_ctrl = m_ctrl(h_ctrl, temb, cemb, attention_mask, cross_attention_kwargs)  # C - apply ctrl subblock
-            h_base = h_base + next(it_down_convs_out)(h_ctrl) * next(scales)  # D - add ctrl -> base
-            hs_base.append(h_base)
-            hs_ctrl.append(h_ctrl)
+        for m_base, m_ctrl in zip(base_model.down_blocks, ctrl_model.down_blocks):
+            # Each ResNet / Attention pair is a subblock
+            base_resnets = m_base.resnets
+            ctrl_resnets = m_ctrl.resnets
+            base_attentions = m_base.attentions if hasattr(m_base, "attentions") else [None] * len(base_resnets)
+            ctrl_attentions = m_ctrl.attentions if hasattr(m_ctrl, "attentions") else [None] * len(ctrl_resnets)
+            for br, ba, cr, ca in zip(base_resnets, base_attentions, ctrl_resnets, ctrl_attentions):
+                # A - concat base -> ctrl
+                h_ctrl = torch.cat([h_ctrl, next(it_down_convs_in)(h_base)], dim=1)
+                # B - apply base subblock
+                h_base = br(h_base, temb)
+                h_base = ba(h_base, cemb, attention_mask, cross_attention_kwargs).sample
+                # C - apply ctrl subblock
+                h_ctrl = cr(h_ctrl, temb)
+                h_ctrl = ca(h_base, cemb, attention_mask, cross_attention_kwargs).sample
+                # D - add ctrl -> base
+                h_base = h_base + next(it_down_convs_out)(h_ctrl) * next(scales)
+                # E - save output
+                hs_base.append(h_base)
+                hs_ctrl.append(h_ctrl)
+            # The downsample is a subblock
+            no_downsampler = m_base.downsamplers is None and m_ctrl.downsamplers is None
+            one_downsampler = (
+                m_base.downsamplers is not None
+                and m_ctrl.downsamplers is not None
+                and len(m_base.downsamplers) == 1
+                and len(m_ctrl.downsamplers) == 1
+            )
+            if not (no_downsampler or one_downsampler):
+                raise ValueError(
+                    "ControlNetXS currently only supports StableDiffusion and StableDiffusion-XL, therefore each down block of the base and control model needs to have none or exactly one downsampler."
+                )
+            if one_downsampler:
+                base_down, ctlr_down = m_base.downsamplers[0], m_ctrl.downsamplers[0]
+                # A - concat base -> ctrl
+                h_ctrl = torch.cat([h_ctrl, next(it_down_convs_in)(h_base)], dim=1)
+                # B - apply base subblock
+                h_base = base_down(h_base)
+                # C - apply ctrl subblock
+                h_ctrl = ctlr_down(h_ctrl)
+                # D - add ctrl -> base
+                h_base = h_base + next(it_down_convs_out)(h_ctrl) * next(scales)
+                # E - save output
+                hs_base.append(h_base)
+                hs_ctrl.append(h_ctrl)
 
         # 2 - mid
         h_ctrl = torch.cat([h_ctrl, next(it_down_convs_in)(h_base)], dim=1)  # A - concat base -> ctrl
-        for m_base, m_ctrl in zip(base_mid_subblocks, ctrl_mid_subblocks):
-            h_base = m_base(h_base, temb, cemb, attention_mask, cross_attention_kwargs)  # B - apply base subblock
-            h_ctrl = m_ctrl(h_ctrl, temb, cemb, attention_mask, cross_attention_kwargs)  # C - apply ctrl subblock
+        h_base = base_model.mid_block(
+            h_base, temb, cemb, attention_mask, cross_attention_kwargs
+        )  # B - apply base mid block
+        h_ctrl = ctrl_model.mid_block(
+            h_base, temb, cemb, attention_mask, cross_attention_kwargs
+        )  # C - apply ctrl mid block
         h_base = h_base + self.middle_block_out(h_ctrl) * next(scales)  # D - add ctrl -> base
 
         # 3 - up
-        for i, m_base in enumerate(base_up_subblocks):
-            h_base = h_base + next(it_up_convs_out)(hs_ctrl.pop()) * next(scales)  # add info from ctrl encoder
-            h_base = torch.cat([h_base, hs_base.pop()], dim=1)  # concat info from base encoder+ctrl encoder
-            h_base = m_base(h_base, temb, cemb, attention_mask, cross_attention_kwargs)
+        for m_base in enumerate(base_model.up_blocks):
+            base_resnets = m_base.resnets
+            base_attentions = m_base.attentions if hasattr(m_base, "attentions") else [None] * len(base_resnets)
+            base_ups = [None] * len(base_resnets)
+            no_upsampler = m_base.upsamplers is None
+            one_upsampler = m_base.upsamplers is not None and len(m_base.upsamplers) == 1
+            if not (no_upsampler or one_upsampler):
+                raise ValueError(
+                    "ControlNetXS currently only supports StableDiffusion and StableDiffusion-XL, therefore each up block of the base model needs to have none or exactly one upsampler."
+                )
+            if one_upsampler:
+                base_ups[-1] = m_base.upsamplers[0]
+
+            for r, a, u in zip(base_resnets, base_attentions, base_ups):
+                # add info from ctrl encoder
+                h_base = h_base + next(it_up_convs_out)(hs_ctrl.pop()) * next(scales)
+                # concat info from base encoder+ctrl encoder
+                h_base = torch.cat([h_base, hs_base.pop()], dim=1)
+                # apply base subblock
+                h_base = r(h_base, temb, cemb, attention_mask, cross_attention_kwargs)
+                if a is not None:
+                    h_base = a(h_base, cemb, attention_mask, cross_attention_kwargs)
+                if u is not None:
+                    h_base = u(h_base)
 
         h_base = base_model.conv_norm_out(h_base)
         h_base = base_model.conv_act(h_base)
@@ -764,42 +817,6 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
         return compatible, condition_downscale_factor, vae_downscale_factor
 
 
-class SubBlock(nn.ModuleList):
-    """A SubBlock is the largest piece of either base or control model, that is executed independently of the other model respectively.
-    Before each subblock, information is concatted from base to control. And after each subblock, information is added from control to base.
-    """
-
-    def __init__(self, ms, *args, **kwargs):
-        if not is_iterable(ms):
-            ms = [ms]
-        super().__init__(ms, *args, **kwargs)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        temb: torch.Tensor,
-        cemb: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
-    ):
-        """Iterate through children and pass correct information to each."""
-        for m in self:
-            if isinstance(m, ResnetBlock2D):
-                x = m(x, temb)
-            elif isinstance(m, Transformer2DModel):
-                x = m(x, cemb, attention_mask=attention_mask, cross_attention_kwargs=cross_attention_kwargs).sample
-            elif isinstance(m, Downsample2D):
-                x = m(x)
-            elif isinstance(m, Upsample2D):
-                x = m(x)
-            else:
-                raise ValueError(
-                    f"Type of m is {type(m)} but should be `ResnetBlock2D`, `Transformer2DModel`,  `Downsample2D` or `Upsample2D`"
-                )
-
-        return x
-
-
 def adjust_time_dims(unet: UNet2DConditionModel, in_dim: int, out_dim: int):
     unet.time_embedding.linear_1 = nn.Linear(in_dim, out_dim)
 
@@ -809,7 +826,7 @@ def increase_block_input_in_encoder_resnet(unet: UNet2DConditionModel, block_no,
     r = unet.down_blocks[block_no].resnets[resnet_idx]
     old_norm1, old_conv1 = r.norm1, r.conv1
     # norm
-    norm_args = "num_groups num_channels eps affine".split(" ")
+    norm_args = ["num_groups", "num_channels", "eps", "affine"]
     for a in norm_args:
         assert hasattr(old_norm1, a)
     norm_kwargs = {a: getattr(old_norm1, a) for a in norm_args}
@@ -893,7 +910,7 @@ def increase_block_input_in_mid_resnet(unet: UNet2DConditionModel, by):
     m = unet.mid_block.resnets[0]
     old_norm1, old_conv1 = m.norm1, m.conv1
     # norm
-    norm_args = "num_groups num_channels eps affine".split(" ")
+    norm_args = ["num_groups", "num_channels", "eps", "affine"]
     for a in norm_args:
         assert hasattr(old_norm1, a)
     norm_kwargs = {a: getattr(old_norm1, a) for a in norm_args}
@@ -972,42 +989,6 @@ def is_iterable(o):
         return True
     except TypeError:
         return False
-
-
-def to_sub_blocks(blocks):
-    if not is_iterable(blocks):
-        blocks = [blocks]
-
-    sub_blocks = []
-
-    for b in blocks:
-        if hasattr(b, "resnets"):
-            if hasattr(b, "attentions") and b.attentions is not None:
-                for r, a in zip(b.resnets, b.attentions):
-                    sub_blocks.append([r, a])
-
-                num_resnets = len(b.resnets)
-                num_attns = len(b.attentions)
-
-                if num_resnets > num_attns:
-                    # we can have more resnets than attentions, so add each resnet as separate subblock
-                    for i in range(num_attns, num_resnets):
-                        sub_blocks.append([b.resnets[i]])
-            else:
-                for r in b.resnets:
-                    sub_blocks.append([r])
-
-        # upsamplers are part of the same subblock
-        if hasattr(b, "upsamplers") and b.upsamplers is not None:
-            for u in b.upsamplers:
-                sub_blocks[-1].extend([u])
-
-        # downsamplers are own subblock
-        if hasattr(b, "downsamplers") and b.downsamplers is not None:
-            for d in b.downsamplers:
-                sub_blocks.append([d])
-
-    return list(map(SubBlock, sub_blocks))
 
 
 def zero_module(module):
