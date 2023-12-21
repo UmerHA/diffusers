@@ -722,10 +722,12 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
                 h_ctrl = torch.cat([h_ctrl, next(it_down_convs_in)(h_base)], dim=1)
                 # B - apply base subblock
                 h_base = br(h_base, temb)
-                h_base = ba(h_base, cemb, attention_mask, cross_attention_kwargs).sample
+                if ba is not None:
+                    h_base = ba(h_base, cemb, attention_mask, cross_attention_kwargs).sample
                 # C - apply ctrl subblock
                 h_ctrl = cr(h_ctrl, temb)
-                h_ctrl = ca(h_ctrl, cemb, attention_mask, cross_attention_kwargs).sample
+                if ca is not None:
+                    h_ctrl = ca(h_ctrl, cemb, attention_mask, cross_attention_kwargs).sample
                 # D - add ctrl -> base
                 h_base = h_base + next(it_down_convs_out)(h_ctrl) * next(scales)
                 # E - save output
