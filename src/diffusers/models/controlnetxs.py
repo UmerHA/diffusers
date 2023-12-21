@@ -789,7 +789,7 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
                 # concat info from base encoder+ctrl encoder
                 h_base = torch.cat([h_base, hs_base.pop()], dim=1)
                 # apply base subblock
-                h_base = r(h_base, temb, cemb, attention_mask, cross_attention_kwargs)
+                h_base = r(h_base, temb)
                 if a is not None:
                     h_base = a(h_base, cemb, attention_mask, cross_attention_kwargs)
                 if u is not None:
