@@ -770,7 +770,7 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
         h_base = h_base + self.middle_block_out(h_ctrl) * next(scales)  # D - add ctrl -> base
 
         # 3 - up
-        for m_base in enumerate(base_model.up_blocks):
+        for m_base in base_model.up_blocks:
             base_resnets = m_base.resnets
             base_attentions = m_base.attentions if hasattr(m_base, "attentions") else [None] * len(base_resnets)
             base_ups = [None] * len(base_resnets)
