@@ -791,7 +791,7 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
                 # apply base subblock
                 h_base = r(h_base, temb)
                 if a is not None:
-                    h_base = a(h_base, cemb, attention_mask, cross_attention_kwargs)
+                    h_base = a(h_base, cemb, attention_mask, cross_attention_kwargs).sample
                 if u is not None:
                     h_base = u(h_base)
 
