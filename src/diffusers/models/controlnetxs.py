@@ -723,11 +723,11 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
                 # B - apply base subblock
                 h_base = br(h_base, temb)
                 if ba is not None:
-                    h_base = ba(h_base, cemb, attention_mask, cross_attention_kwargs)[0]
+                    h_base = ba(h_base, cemb, attention_mask, cross_attention_kwargs).sample
                 # C - apply ctrl subblock
                 h_ctrl = cr(h_ctrl, temb)
                 if ca is not None:
-                    h_ctrl = ca(h_ctrl, cemb, attention_mask, cross_attention_kwargs)[0]
+                    h_ctrl = ca(h_ctrl, cemb, attention_mask, cross_attention_kwargs).sample
                 # D - add ctrl -> base
                 h_base = h_base + next(it_down_convs_out)(h_ctrl) * next(scales)
                 # E - save output
@@ -791,7 +791,7 @@ class ControlNetXSModel(ModelMixin, ConfigMixin):
                 # apply base subblock
                 h_base = r(h_base, temb)
                 if a is not None:
-                    h_base = a(h_base, cemb, attention_mask, cross_attention_kwargs)[0]
+                    h_base = a(h_base, cemb, attention_mask, cross_attention_kwargs).sample
                 if u is not None:
                     h_base = u(h_base)
 
