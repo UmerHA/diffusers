@@ -69,6 +69,8 @@ Please also check out our [Community Scripts](https://github.com/huggingface/dif
 |   UFOGen Scheduler                                                                                               | Scheduler for UFOGen Model (compatible with Stable Diffusion pipelines)                                                                                                                                                                                                                                                                                                                                                 |  [UFOGen Scheduler](#ufogen-scheduler) | - | [dg845](https://github.com/dg845) |
 | Stable Diffusion XL IPEX Pipeline | Accelerate Stable Diffusion XL inference pipeline with BF16/FP32 precision on Intel Xeon CPUs with [IPEX](https://github.com/intel/intel-extension-for-pytorch) | [Stable Diffusion XL on IPEX](#stable-diffusion-xl-on-ipex) | - | [Dan Li](https://github.com/ustcuna/) |
 
+| Noise Rectification | Get high-fidelity videos by applying noise-rectification to AnimateDiff (see [paper page](https://github.com/alimama-creative/Noise-Rectification)) | [Noise Rectification Pipeline](#noise-rectification-pipeline) | - | [Umer H. Adil](https://twitter.com/UmerHAdil) |
+
 To load a custom pipeline you just need to pass the `custom_pipeline` argument to `DiffusionPipeline`, as one of the files in `diffusers/examples/community`. Feel free to send a PR with your own pipelines, we will merge them quickly.
 
 ```py
@@ -4050,3 +4052,42 @@ grid_image.save(grid_dir + "sample.png")
 pag_scale : gudiance scale of PAG (ex: 5.0)
 
 pag_applied_layers_index : index of the layer to apply perturbation (ex: ['m0'])
+
+### Noise Rectification Pipeline
+
+
+```py
+import torch
+from diffusers import MotionAdapter, DiffusionPipeline, DDIMScheduler
+from diffusers.utils import export_to_gif, load_image
+
+image = load_image("https://cdn-lfs.huggingface.co/datasets/huggingface/documentation-images/e073c8191b03635372961f219ef5ca3ad7d60b65eb2a71a7dbd1a3a28f86b4fe?response-content-disposition=inline%3B+filename*%3DUTF-8%27%27sdxl-text2img.png%3B+filename%3D%22sdxl-text2img.png%22%3B&response-content-type=image%2Fpng&Expires=1712498518&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTcxMjQ5ODUxOH19LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2RuLWxmcy5odWdnaW5nZmFjZS5jby9kYXRhc2V0cy9odWdnaW5nZmFjZS9kb2N1bWVudGF0aW9uLWltYWdlcy9lMDczYzgxOTFiMDM2MzUzNzI5NjFmMjE5ZWY1Y2EzYWQ3ZDYwYjY1ZWIyYTcxYTdkYmQxYTNhMjhmODZiNGZlP3Jlc3BvbnNlLWNvbnRlbnQtZGlzcG9zaXRpb249KiZyZXNwb25zZS1jb250ZW50LXR5cGU9KiJ9XX0_&Signature=TVcBs2WmAv-9cylwy8Cmbm1nSRHaYZL0quYEG45gtZOR%7EQxgJcx419TceZOGeiDNGP6PS3pQirCbxSRwGB6evPWdyCdcY7T-2-jFwU1EYUQlel7Rfrkwmtc6NzjIdYZFK7NAbynRWqo4pQvmNOyoC2FRH6pXea8wy09ruAneoh2HKr6JyfcTKQQctjRtCFFvcQ%7EamMalENp%7E-RTjpp2-wxwBk9G6K-yaCTls1Mgaqw8nexgrtGAymZYWCY-ulwEcmpjcEyZUtTMONxcQjNSn5%7EU-M9paTCHyuOuFaqui7fr90HJNtLrIcBVBufAqSHqaZmzRJdTvgT7CvK4F-4ZU8A__&Key-Pair-Id=KVTP0A1DKRTAX")
+
+adapter = MotionAdapter.from_pretrained("guoyww/animatediff-motion-adapter-v1-5-2")
+
+model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
+pipe = DiffusionPipeline.from_pretrained(
+    model_id,
+    custom_pipeline="pipeline_noise_rectification",
+    motion_adapter=adapter
+).to("cuda")
+scheduler = DDIMScheduler.from_pretrained(
+    model_id,
+    subfolder="scheduler",
+    clip_sample=False,
+    timestep_spacing="linspace",
+    beta_schedule="linear",
+    steps_offset=1,
+)
+
+output = pipe(
+    prompt="Astronaut in a jungle, cold color palette, muted colors, detailed, 8k",
+    input_image=image,
+    num_frames=4
+)
+frames = output.frames[0]
+
+export_to_gif(frames, "animation.gif")
+```
+
+
